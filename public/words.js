@@ -62,7 +62,8 @@ socket.on("wordSubmissionUpdate", (players) => {
     });
 });
 
-socket.on("allWordsSubmitted", () => {
+// Redirect to round1 when the server starts the round
+socket.on("startRound1", () => {
     window.location.href = `/round1?roomId=${roomId}`;
 });
 
