@@ -1,212 +1,179 @@
-// server.js - WHOLE FILE
-
 const express = require("express");
-const app = express();
 const http = require("http");
-const server = http.createServer(app);
-const { Server } = require("socket.io");
-const io = new Server(server);
+const socketIo = require("socket.io");
+const path = require("path");
 
-app.use(express.static("public"));
-app.get("/", (req, res) => res.sendFile(__dirname + "/public/index.html"));
-app.get("/lobby", (req, res) => res.sendFile(__dirname + "/public/lobby.html"));
-app.get("/words", (req, res) => res.sendFile(__dirname + "/public/words.html"));
-app.get("/round1", (req, res) => res.sendFile(__dirname + "/public/round1.html"));
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
 
 const rooms = {};
-let serverTimers = {};
+
+app.use(express.static(path.join(__dirname, "public")));
+
+// --- Route handlers ---
+app.get("/lobby", (req, res) => res.sendFile(path.join(__dirname, "public", "lobby.html")));
+app.get("/words", (req, res) => res.sendFile(path.join(__dirname, "public", "words.html")));
+app.get("/round1", (req, res) => res.sendFile(path.join(__dirname, "public", "round1.html")));
+app.get("/round2", (req, res) => res.send("<h2>Round 2</h2>"));
 
 io.on("connection", (socket) => {
-    console.log(`A user connected: ${socket.id}`);
+    console.log("A user connected:", socket.id);
 
-    socket.on("joinRoom", (roomId) => {
-        if (socket.roomId) {
-            socket.leave(socket.roomId);
+    socket.on("joinRoom", ({ roomId, name }) => {
+        if (!roomId || !name) {
+            return console.log(`Connection attempt with invalid details.`);
         }
+
+        // Initialize the room if it doesn't exist.
+        if (!rooms[roomId]) {
+            rooms[roomId] = {
+                players: {},
+                teams: { teamA: [], teamB: [] },
+                words: {},
+                wordsSubmittedCount: 0,
+                inProgress: false, // <-- NEW: Flag to track if the game has started
+                round1: {
+                    // ... (rest of round1 state)
+                },
+            };
+        }
+
+        const room = rooms[roomId];
+
+        // ** THE LOCKING LOGIC **
+        // If the game has started AND this player is not already in the room, block them.
+        if (room.inProgress && !room.players[socket.id]) {
+            socket.emit("roomLocked"); // Send a specific event to the user trying to join
+            return;
+        }
+
         socket.join(roomId);
         socket.roomId = roomId;
-        if (!rooms[roomId]) {
-            rooms[roomId] = { id: roomId, players: {}, teams: { teamA: [], teamB: [] }, state: "LOBBY" };
-            console.log(`Room [${roomId}] created.`);
-        }
-        // Check if player already exists (for reloads), otherwise create new
-        if (!rooms[roomId].players[socket.id]) {
-            rooms[roomId].players[socket.id] = { id: socket.id, words: [], team: null };
-        }
-        console.log(`Player ${socket.id} joined room [${roomId}]`);
-        // Handle which update to send based on room state
-        if (rooms[roomId].state === "LOBBY") {
-            io.to(roomId).emit("lobbyUpdate", rooms[roomId]);
-        } else if (rooms[roomId].state === "WORD_SUBMISSION") {
-            io.to(roomId).emit("wordSubmissionUpdate", rooms[roomId].players);
-        }
-    });
+        socket.name = name;
+        room.players[socket.id] = name;
 
-    socket.on("joinTeam", (teamId) => {
-        const roomId = socket.roomId;
-        if (!rooms[roomId] || rooms[roomId].state !== "LOBBY") return;
-        const room = rooms[roomId];
-        if (room.teams[teamId] && room.teams[teamId].length < 2) {
-            Object.keys(room.teams).forEach((t) => {
-                room.teams[t] = room.teams[t].filter((pId) => pId !== socket.id);
-            });
-            room.teams[teamId].push(socket.id);
-            room.players[socket.id].team = teamId;
-            console.log(`Player ${socket.id} joined team [${teamId}] in room [${roomId}]`);
+        console.log(`Player '${name}' (${socket.id}) joined room ${roomId}`);
+
+        // This logic correctly sends game state to reconnecting players or lobby state to new ones.
+        if (room.inProgress) {
+            socket.emit("gameStateUpdate", room.round1);
+        } else {
             io.to(roomId).emit("lobbyUpdate", room);
-            checkLobbyReady(roomId);
         }
     });
 
-    socket.on("submitWords", (words) => {
-        const roomId = socket.roomId;
-        if (!rooms[roomId] || rooms[roomId].state !== "WORD_SUBMISSION") return;
-        // ***** CHANGE HERE: Validating for 5 words *****
-        if (Array.isArray(words) && words.length === 5) {
-            rooms[roomId].players[socket.id].words = words;
-            console.log(`Player ${socket.id} submitted words in room [${roomId}]`);
-            io.to(roomId).emit("wordSubmissionUpdate", rooms[roomId].players);
-            checkAllWordsSubmitted(roomId);
-        }
-    });
+    socket.on("joinTeam", (team) => {
+        const { roomId, id: playerId, name } = socket;
+        if (!roomId || !rooms[roomId]) return;
 
-    socket.on("startTurn", () => {
-        const roomId = socket.roomId;
         const room = rooms[roomId];
-        if (!room || room.state !== "ROUND_1" || room.activePlayerId !== socket.id || room.turnInProgress) return;
-        room.turnInProgress = true;
-        room.turnEndTime = Date.now() + 60000;
-        serverTimers[roomId] = setTimeout(() => endTurn(roomId), 60000);
-        const newWord = getNewWord(roomId);
-        io.to(roomId).emit("turnBegan", { currentWord: newWord, turnEndTime: room.turnEndTime });
+        const player = { id: playerId, name };
+
+        // Remove player from the other team if they are switching
+        room.teams.teamA = room.teams.teamA.filter((p) => p.id !== playerId);
+        room.teams.teamB = room.teams.teamB.filter((p) => p.id !== playerId);
+
+        // Add player to the new team if there's space
+        if (room.teams[team].length < 2) {
+            room.teams[team].push(player);
+        }
+
+        io.to(roomId).emit("lobbyUpdate", room);
+
+        if (room.teams.teamA.length === 2 && room.teams.teamB.length === 2) {
+            io.to(roomId).emit("startWordSubmission");
+        }
+    });
+
+    socket.on("submitWords", (submittedWords) => {
+        const { roomId, id: playerId } = socket;
+        if (!roomId || !rooms[roomId]) return;
+
+        const room = rooms[roomId];
+        room.words[playerId] = submittedWords;
+        room.wordsSubmittedCount++;
+
+        io.to(roomId).emit("wordsUpdate", room.wordsSubmittedCount);
+
+        if (room.wordsSubmittedCount === 4) {
+            // --- Set the game state to "in progress" ---
+            room.inProgress = true; // <-- NEW: Lock the room when the game starts
+
+            room.round1.allWords = Object.values(room.words).flat();
+            room.round1.turnOrder = [room.teams.teamA[0], room.teams.teamB[0], room.teams.teamA[1], room.teams.teamB[1]];
+            io.to(roomId).emit("startRound1");
+            startTurn(roomId);
+        }
+    });
+
+    socket.on("getNewWord", () => {
+        const { roomId } = socket;
+        if (!roomId || !rooms[roomId] || !rooms[roomId].round1.allWords.length) return;
+        const room = rooms[roomId];
+        const { allWords } = room.round1;
+        const randomIndex = Math.floor(Math.random() * allWords.length);
+        room.round1.currentWord = allWords[randomIndex];
+        io.to(roomId).emit("gameStateUpdate", room.round1);
     });
 
     socket.on("wordGuessed", () => {
-        const roomId = socket.roomId;
-        const room = rooms[roomId];
-        if (!room || !room.turnInProgress) return;
-        room.scores[room.activeTeam]++;
-        room.guessedWords.push(room.currentWord);
-        if (room.wordPool.length === 0) {
-            endRound(roomId);
-            return;
-        }
-        const newWord = getNewWord(roomId);
-        io.to(roomId).emit("gameStateUpdate", {
-            scores: room.scores,
-            currentWord: newWord,
-            wordsLeft: room.wordPool.length,
-        });
-    });
+        const { roomId } = socket;
+        if (!roomId || !rooms[roomId] || !rooms[roomId].round1.currentWord) return;
 
-    socket.on("skipWord", () => {
-        const roomId = socket.roomId;
         const room = rooms[roomId];
-        if (!room || !room.turnInProgress) return;
-        room.wordPool.push(room.currentWord);
-        const newWord = getNewWord(roomId);
-        io.to(roomId).emit("gameStateUpdate", { currentWord: newWord });
+        const { round1 } = room;
+        const currentPlayer = round1.turnOrder[round1.currentPlayerIndex];
+        const team = room.teams.teamA.some((p) => p.id === currentPlayer.id) ? "teamA" : "teamB";
+        round1.scores[team]++;
+
+        round1.allWords = round1.allWords.filter((word) => word !== round1.currentWord);
+        round1.currentWord = null;
+
+        if (round1.allWords.length === 0) {
+            io.to(roomId).emit("roundOver", round1.scores);
+            setTimeout(() => io.to(roomId).emit("startRound2"), 5000);
+        } else {
+            io.to(roomId).emit("gameStateUpdate", round1);
+        }
     });
 
     socket.on("disconnect", () => {
-        console.log(`User disconnected: ${socket.id}`);
-        const roomId = socket.roomId;
-        if (rooms[roomId]) {
-            if (rooms[roomId].state === "ROUND_1" && rooms[roomId].activePlayerId === socket.id) {
-                endTurn(roomId);
-            }
-            delete rooms[roomId].players[socket.id];
-            Object.keys(rooms[roomId].teams).forEach((t) => {
-                rooms[roomId].teams[t] = rooms[roomId].teams[t].filter((pId) => pId !== socket.id);
-            });
-            if (Object.keys(rooms[roomId].players).length === 0) {
-                console.log(`Room [${roomId}] is empty and has been closed.`);
-                delete rooms[roomId];
-            } else {
-                io.to(roomId).emit("lobbyUpdate", rooms[roomId]);
-                io.to(roomId).emit("playerLeft", socket.id);
-            }
-        }
+        console.log("A user disconnected:", socket.id);
+        const { roomId, id: playerId } = socket;
+        if (!roomId || !rooms[roomId]) return;
+
+        const room = rooms[roomId];
+        delete room.players[playerId];
+        room.teams.teamA = room.teams.teamA.filter((p) => p.id !== playerId);
+        room.teams.teamB = room.teams.teamB.filter((p) => p.id !== playerId);
+
+        io.to(roomId).emit("lobbyUpdate", room);
     });
 });
 
-function checkLobbyReady(roomId) {
-    const room = rooms[roomId];
-    if (room.teams.teamA.length === 2 && room.teams.teamB.length === 2) {
-        console.log(`Lobby full for room [${roomId}]. Moving to word submission.`);
-        room.state = "WORD_SUBMISSION";
-        io.to(roomId).emit("startWordSubmission");
-    }
-}
-
-function checkAllWordsSubmitted(roomId) {
+let timers = {};
+function startTurn(roomId) {
     const room = rooms[roomId];
     if (!room) return;
-    const allPlayers = Object.values(room.players);
-    // ***** CHANGE HERE: Checking for 5 words *****
-    if (allPlayers.length === 4 && allPlayers.every((p) => p.words.length === 5)) {
-        console.log(`All words submitted for room [${roomId}]. Initializing Round 1.`);
-        initializeRound1(roomId);
-    }
-}
 
-function initializeRound1(roomId) {
-    const room = rooms[roomId];
-    room.state = "ROUND_1";
-    let allWords = [];
-    Object.values(room.players).forEach((p) => {
-        allWords = allWords.concat(p.words);
-    });
-    room.wordPool = allWords.sort(() => Math.random() - 0.5);
-    room.guessedWords = [];
-    room.currentWord = null;
-    room.turnOrder = [room.teams.teamA[0], room.teams.teamB[0], room.teams.teamA[1], room.teams.teamB[1]];
-    room.turnIndex = 0;
-    room.activePlayerId = room.turnOrder[room.turnIndex];
-    room.activeTeam = room.players[room.activePlayerId].team;
-    room.scores = { teamA: 0, teamB: 0 };
-    room.turnInProgress = false;
-    io.to(roomId).emit("startRound1", room);
-}
+    io.to(roomId).emit("gameStateUpdate", room.round1);
 
-function getNewWord(roomId) {
-    const room = rooms[roomId];
-    if (room.wordPool.length > 0) {
-        room.currentWord = room.wordPool.shift();
-        return room.currentWord;
-    }
-    return null;
-}
+    if (timers[roomId]) clearInterval(timers[roomId]);
 
-function endTurn(roomId) {
-    const room = rooms[roomId];
-    if (!room) return;
-    console.log(`Turn ended for room [${roomId}]`);
-    clearTimeout(serverTimers[roomId]);
-    room.turnIndex = (room.turnIndex + 1) % room.turnOrder.length;
-    room.activePlayerId = room.turnOrder[room.turnIndex];
-    room.activeTeam = room.players[room.activePlayerId].team;
-    room.turnInProgress = false;
-    room.currentWord = null;
-    io.to(roomId).emit("turnEnded", {
-        activePlayerId: room.activePlayerId,
-        activeTeam: room.activeTeam,
-        scores: room.scores,
-    });
-}
+    let timeLeft = 60;
+    timers[roomId] = setInterval(() => {
+        io.to(roomId).emit("timerUpdate", timeLeft);
+        timeLeft--;
 
-function endRound(roomId) {
-    const room = rooms[roomId];
-    if (!room) return;
-    console.log(`Round 1 ended for room [${roomId}]`);
-    clearTimeout(serverTimers[roomId]);
-    room.state = "ROUND_1_OVER";
-    const winner =
-        room.scores.teamA > room.scores.teamB ? "Team A" : room.scores.teamB > room.scores.teamA ? "Team B" : "It's a Tie";
-    io.to(roomId).emit("roundEnded", { scores: room.scores, winner: winner });
+        if (timeLeft < 0) {
+            clearInterval(timers[roomId]);
+            room.round1.currentPlayerIndex = (room.round1.currentPlayerIndex + 1) % 4;
+            room.round1.currentWord = null;
+            startTurn(roomId);
+        }
+    }, 1000);
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server is running and listening on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server is running on port ${PORT}`));

@@ -1,75 +1,54 @@
 // public/words.js - WHOLE FILE
 
 const socket = io();
+
+// Get both the roomId and name from the URL.
 const urlParams = new URLSearchParams(window.location.search);
 const roomId = urlParams.get("roomId");
+const name = urlParams.get("name");
 
-const wordForm = document.getElementById("word-form");
-const statusList = document.getElementById("status-list");
-const wordInputsContainer = document.createElement("div");
-wordForm.appendChild(wordInputsContainer);
+// Get references to HTML elements.
+const wordsForm = document.getElementById("wordsForm");
+const statusDiv = document.getElementById("status");
+const submitButton = wordsForm.querySelector("button");
 
-// Generate 5 input fields (changed from 10)
-for (let i = 1; i <= 5; i++) {
-    const input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = `Word ${i}`;
-    input.required = true;
-    wordInputsContainer.appendChild(input);
+// *** THE FIX IS HERE ***
+if (roomId && name) {
+    // Re-join the room with the correct player details.
+    // This now sends the object the server is expecting.
+    socket.emit("joinRoom", { roomId, name });
+} else {
+    statusDiv.textContent = "Error: Could not identify player or room.";
 }
 
-// Add the submit button after the inputs
-const submitButton = document.createElement("button");
-submitButton.type = "submit";
-submitButton.textContent = "Submit 5 Words";
-wordForm.appendChild(submitButton);
+wordsForm.addEventListener("submit", function (event) {
+    event.preventDefault();
 
-// --- EMIT EVENTS ---
-wordForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const inputs = Array.from(wordInputsContainer.querySelectorAll("input"));
-    const words = inputs.map((input) => input.value.trim());
+    // Collect all 5 words from the input fields.
+    const words = [
+        document.getElementById("word1").value,
+        document.getElementById("word2").value,
+        document.getElementById("word3").value,
+        document.getElementById("word4").value,
+        document.getElementById("word5").value,
+    ];
 
-    if (words.some((w) => w === "")) {
-        alert("Please fill out all 5 words.");
-        return;
-    }
-
+    // Send the words to the server.
     socket.emit("submitWords", words);
+
+    // Disable the form after submission to prevent resubmitting.
     submitButton.disabled = true;
     submitButton.textContent = "Words Submitted!";
-    inputs.forEach((input) => (input.disabled = true));
+    statusDiv.textContent = "Your words have been submitted. Waiting for other players...";
 });
 
-// --- LISTEN FOR EVENTS ---
-socket.on("wordSubmissionUpdate", (players) => {
-    statusList.innerHTML = ""; // Clear the list for redraw
-    Object.values(players).forEach((player) => {
-        const li = document.createElement("li");
-        let text = `Player ${player.id.substring(0, 4)}`;
-
-        if (player.id === socket.id) {
-            text = "You"; // Make it clear who you are
-        }
-
-        if (player.words.length === 5) {
-            li.classList.add("done");
-            li.textContent = `${text} (Ready ✔️)`;
-        } else {
-            li.textContent = `${text} (Waiting...)`;
-        }
-        statusList.appendChild(li);
-    });
+// Listen for updates on how many players have submitted their words.
+socket.on("wordsUpdate", (count) => {
+    statusDiv.textContent = `Waiting for players... ${count}/4 players have submitted their words.`;
 });
 
-// Redirect to round1 when the server starts the round
+// Listen for the signal to start round 1. Redirect to blank page instead.
 socket.on("startRound1", () => {
-    window.location.href = `/round1?roomId=${roomId}`;
-});
-
-// On connect, ensure we join the room to get updates
-socket.on("connect", () => {
-    if (roomId) {
-        socket.emit("joinRoom", roomId);
-    }
+    // Redirect all players to blank page.
+    window.location.href = `/end?roomId=${roomId}&name=${encodeURIComponent(name)}`;
 });

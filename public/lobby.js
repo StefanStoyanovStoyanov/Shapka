@@ -1,15 +1,12 @@
 // public/lobby.js - WHOLE FILE
-
-// Establish a connection with the Socket.IO server.
 const socket = io();
 
-// --- Initial Setup ---
-
-// Read the 'roomId' from the URL (e.g., from ?roomId=my-cool-room).
+// Read both 'roomId' and 'name' from the URL.
 const urlParams = new URLSearchParams(window.location.search);
 const roomId = urlParams.get("roomId");
+const name = urlParams.get("name");
 
-// Get references to the HTML elements we will be manipulating.
+// Get references to HTML elements.
 const roomTitle = document.getElementById("roomTitle");
 const joinTeamAButton = document.getElementById("joinTeamA");
 const joinTeamBButton = document.getElementById("joinTeamB");
@@ -17,48 +14,36 @@ const statusDiv = document.getElementById("status");
 const teamASlots = [document.getElementById("teamA_slot1"), document.getElementById("teamA_slot2")];
 const teamBSlots = [document.getElementById("teamB_slot1"), document.getElementById("teamB_slot2")];
 
-// --- Check for Room ID and Emit Join Event ---
-if (roomId) {
+if (roomId && name) {
     roomTitle.innerText = `Lobby for Room: ${roomId}`;
-    socket.emit("joinRoom", roomId);
+    // Emit an object with both roomId and name.
+    socket.emit("joinRoom", { roomId, name });
 } else {
-    roomTitle.innerText = "Error: No Room ID provided!";
+    roomTitle.innerText = "Error: Room ID or Name is missing!";
 }
 
 // --- Client Actions (Emitting Events) ---
-joinTeamAButton.addEventListener("click", () => {
-    socket.emit("joinTeam", "teamA");
-});
-joinTeamBButton.addEventListener("click", () => {
-    socket.emit("joinTeam", "teamB");
-});
+joinTeamAButton.addEventListener("click", () => socket.emit("joinTeam", "teamA"));
+joinTeamBButton.addEventListener("click", () => socket.emit("joinTeam", "teamB"));
 
 // --- Server Responses (Listening for Events) ---
-
 socket.on("lobbyUpdate", (room) => {
-    // --- Render Team A Slots ---
-    teamASlots.forEach((slot) => {
-        slot.textContent = "Empty";
-        slot.classList.remove("filled");
-    });
-    room.teams.teamA.forEach((playerId, index) => {
-        const slot = teamASlots[index];
-        slot.textContent = `Player ${playerId.substring(0, 4)}`;
-        slot.classList.add("filled");
-    });
+    const updateTeamSlots = (slots, teamMembers) => {
+        slots.forEach((slot, index) => {
+            const player = teamMembers[index];
+            if (player) {
+                slot.textContent = player.name; // Display player's name
+                slot.classList.add("filled");
+            } else {
+                slot.textContent = "Empty";
+                slot.classList.remove("filled");
+            }
+        });
+    };
 
-    // --- Render Team B Slots ---
-    teamBSlots.forEach((slot) => {
-        slot.textContent = "Empty";
-        slot.classList.remove("filled");
-    });
-    room.teams.teamB.forEach((playerId, index) => {
-        const slot = teamBSlots[index];
-        slot.textContent = `Player ${playerId.substring(0, 4)}`;
-        slot.classList.add("filled");
-    });
+    updateTeamSlots(teamASlots, room.teams.teamA);
+    updateTeamSlots(teamBSlots, room.teams.teamB);
 
-    // --- Update Status Message ---
     const playersNeeded = 4 - (room.teams.teamA.length + room.teams.teamB.length);
     if (playersNeeded > 0) {
         statusDiv.textContent = `Waiting for ${playersNeeded} more player(s)...`;
@@ -69,9 +54,7 @@ socket.on("lobbyUpdate", (room) => {
     }
 });
 
-// ***** THE FIX IS HERE *****
-// Listen for the signal to start the next phase.
 socket.on("startWordSubmission", () => {
-    // This now correctly redirects to the /words page.
-    window.location.href = `/words?roomId=${roomId}`;
+    // Pass the name to the next page as well, in case it's needed.
+    window.location.href = `/words?roomId=${roomId}&name=${encodeURIComponent(name)}`;
 });
