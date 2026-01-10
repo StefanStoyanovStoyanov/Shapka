@@ -49,6 +49,6 @@ socket.on("wordsUpdate", (count) => {
 
 // Listen for the signal to start round 1. Redirect to blank page instead.
 socket.on("startRound1", () => {
-    // Redirect all players to blank page.
-    window.location.href = `/end?roomId=${roomId}&name=${encodeURIComponent(name)}`;
+    // Redirect all players to the game page.
+    window.location.href = `/game.html?roomId=${roomId}&name=${encodeURIComponent(name)}`;
 });
