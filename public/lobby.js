@@ -1,53 +1,107 @@
 const socket = io();
-
-const urlParams = new URLSearchParams(window.location.search);
-const roomId = urlParams.get("roomId");
-const name = urlParams.get("name");
+const params = new URLSearchParams(window.location.search);
+const roomId = params.get("roomId");
+const playerName = params.get("name");
+const playerStorageKey = `shapka:${roomId}:playerId`;
+const playerId = params.get("playerId") || sessionStorage.getItem(playerStorageKey);
 
 const roomTitle = document.getElementById("roomTitle");
-const joinTeamAButton = document.getElementById("joinTeamA");
-const joinTeamBButton = document.getElementById("joinTeamB");
+const adminNotice = document.getElementById("adminNotice");
+const teamsContainer = document.getElementById("teams");
+const startGameButton = document.getElementById("startGame");
 const statusDiv = document.getElementById("status");
-const teamASlots = [document.getElementById("teamA_slot1"), document.getElementById("teamA_slot2")];
-const teamBSlots = [document.getElementById("teamB_slot1"), document.getElementById("teamB_slot2")];
 
-if (roomId && name) {
-    roomTitle.innerText = `Lobby for Room: ${roomId}`;
-    socket.emit("joinRoom", { roomId, name });
+if (!roomId || !playerName || !playerId) {
+    roomTitle.textContent = "Room details are missing.";
+    statusDiv.textContent = "Return to the home page and join or create a room.";
 } else {
-    roomTitle.innerText = "Error: Room ID or Name is missing!";
+    sessionStorage.setItem(playerStorageKey, playerId);
+    socket.on("connect", () => socket.emit("joinRoom", { roomId, name: playerName, playerId }));
 }
 
-joinTeamAButton.addEventListener("click", () => socket.emit("joinTeam", "teamA"));
-joinTeamBButton.addEventListener("click", () => socket.emit("joinTeam", "teamB"));
+startGameButton.addEventListener("click", () => socket.emit("startGame"));
 
 socket.on("lobbyUpdate", (room) => {
-    const updateTeamSlots = (slots, teamMembers) => {
-        slots.forEach((slot, index) => {
-            const player = teamMembers[index];
-            if (player) {
-                slot.textContent = player.name;
-                slot.classList.add("filled");
-            } else {
-                slot.textContent = "Empty";
-                slot.classList.remove("filled");
+    const isAdmin = room.adminId === playerId;
+    const assignedPlayerIds = new Set();
+    teamsContainer.replaceChildren();
+    roomTitle.textContent = `Room ${roomId}`;
+    adminNotice.textContent = isAdmin ? "You are the room admin." : "Waiting for the room admin to start.";
+
+    for (const team of room.teams) {
+        const card = document.createElement("section");
+        card.className = "team-card";
+
+        const heading = document.createElement("h2");
+        heading.textContent = team.name;
+        card.append(heading);
+
+        for (const player of team.players) {
+            assignedPlayerIds.add(player.id);
+            const row = document.createElement("div");
+            row.className = "player";
+            const playerLabel = document.createElement("span");
+            playerLabel.textContent = player.name;
+            row.append(playerLabel);
+
+            if (isAdmin) {
+                const removeButton = document.createElement("button");
+                removeButton.type = "button";
+                removeButton.textContent = "Remove";
+                removeButton.setAttribute("aria-label", `Remove ${player.name} from ${team.name}`);
+                removeButton.addEventListener("click", () => socket.emit("removeFromTeam", player.id));
+                row.append(removeButton);
             }
-        });
-    };
+            card.append(row);
+        }
 
-    updateTeamSlots(teamASlots, room.teams.teamA);
-    updateTeamSlots(teamBSlots, room.teams.teamB);
-
-    const playersNeeded = 4 - (room.teams.teamA.length + room.teams.teamB.length);
-    if (playersNeeded > 0) {
-        statusDiv.textContent = `Waiting for ${playersNeeded} more player(s)...`;
-    } else {
-        statusDiv.textContent = "Teams are full! Preparing for next phase...";
-        joinTeamAButton.disabled = true;
-        joinTeamBButton.disabled = true;
+        if (room.phase === "lobby") {
+            const joinButton = document.createElement("button");
+            joinButton.type = "button";
+            joinButton.textContent = "Join this team";
+            joinButton.disabled = team.players.some((player) => player.id === playerId);
+            joinButton.addEventListener("click", () => socket.emit("joinTeam", team.id));
+            card.append(joinButton);
+        }
+        teamsContainer.append(card);
     }
+
+    const allPlayerIds = room.players.map((player) => player.id);
+    const unassigned = room.players.filter((player) => !assignedPlayerIds.has(player.id));
+    if (unassigned.length) {
+        const unassignedCard = document.createElement("section");
+        unassignedCard.className = "team-card";
+        const heading = document.createElement("h2");
+        heading.textContent = "Not on a team";
+        unassignedCard.append(heading);
+        for (const player of unassigned) {
+            const row = document.createElement("div");
+            row.className = "player";
+            row.textContent = player.name;
+            unassignedCard.append(row);
+        }
+        teamsContainer.append(unassignedCard);
+    }
+
+    const everyTeamHasPlayers = room.teams.every((team) => team.players.length > 0);
+    const everyoneAssigned = allPlayerIds.every((id) => assignedPlayerIds.has(id));
+    statusDiv.textContent =
+        `${room.playerCount} player(s) · ${room.teams.length} teams` +
+        (room.phase === "lobby" ? " · Assign everyone and fill every team before starting." : "");
+
+    startGameButton.hidden = !isAdmin || room.phase !== "lobby";
+    startGameButton.disabled = !everyTeamHasPlayers || !everyoneAssigned;
 });
 
 socket.on("startWordSubmission", () => {
-    window.location.href = `/words?roomId=${roomId}&name=${encodeURIComponent(name)}`;
+    window.location.href = `/words?roomId=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}&playerId=${encodeURIComponent(playerId)}`;
+});
+
+socket.on("startGameError", (message) => {
+    statusDiv.textContent = message;
+});
+
+socket.on("roomJoinError", (message) => {
+    roomTitle.textContent = "Could not join room";
+    statusDiv.textContent = message;
 });

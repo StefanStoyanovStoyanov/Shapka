@@ -2,53 +2,161 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <title>Join Game</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Shapka</title>
         <style>
             body {
                 font-family: sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                background-color: #f0f0f0;
+                display: grid;
+                place-items: center;
+                min-height: 100vh;
+                margin: 0;
+                background: #f0f0f0;
             }
-            form {
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
-                padding: 20px;
+            main {
+                width: min(420px, calc(100% - 40px));
+                padding: 24px;
                 border: 1px solid #ccc;
-                border-radius: 5px;
-                background-color: white;
+                border-radius: 8px;
+                background: white;
+                box-sizing: border-box;
             }
-            input {
+            nav,
+            form {
+                display: grid;
+                gap: 12px;
+            }
+            nav {
+                grid-template-columns: 1fr 1fr;
+                margin-bottom: 20px;
+            }
+            nav[hidden],
+            form[hidden],
+            #status[hidden] {
+                display: none;
+            }
+            input,
+            select,
+            button {
+                box-sizing: border-box;
+                width: 100%;
+                padding: 10px;
                 font-size: 16px;
-                padding: 8px;
             }
             button {
-                font-size: 16px;
-                padding: 10px;
                 cursor: pointer;
+            }
+            #status {
+                margin-top: 16px;
             }
         </style>
     </head>
     <body>
-        <form id="joinForm">
-            <h2>Join a Shapka Game Room</h2>
-            <input type="text" id="nameInput" placeholder="Your Name" required />
-            <input type="text" id="roomIdInput" placeholder="Enter Room ID" required />
-            <button type="submit">Join Game</button>
-        </form>
+        <main>
+            <h1>Shapka</h1>
+            <nav aria-label="Room options">
+                <button type="button" id="showJoin">Join a room</button>
+                <button type="button" id="showCreate">Create a room</button>
+            </nav>
 
+            <form id="joinForm" hidden>
+                <h2>Join a room</h2>
+                <input type="text" id="joinName" maxlength="40" placeholder="Your name" required />
+                <input type="text" id="roomId" placeholder="Room code" required />
+                <button type="submit">Join room</button>
+                <button type="button" class="backButton">Back</button>
+            </form>
+
+            <form id="createForm" hidden>
+                <h2>Create a room</h2>
+                <input type="text" id="createName" maxlength="40" placeholder="Your name" required />
+                <label for="teamCount">Number of teams</label>
+                <input type="number" id="teamCount" min="2" max="50" value="2" required />
+                <button type="submit">Create room</button>
+                <button type="button" class="backButton">Back</button>
+            </form>
+            <div id="status" role="status" hidden></div>
+        </main>
+
+        <script src="/socket.io/socket.io.js"></script>
         <script>
-            document.getElementById("joinForm").addEventListener("submit", function (event) {
-                event.preventDefault();
-                const name = document.getElementById("nameInput").value;
-                const roomId = document.getElementById("roomIdInput").value;
-                if (roomId && name) {
-                    window.location.href = `/lobby?roomId=${roomId}&name=${encodeURIComponent(name)}`;
+            const socket = io();
+            const joinForm = document.getElementById("joinForm");
+            const createForm = document.getElementById("createForm");
+            const status = document.getElementById("status");
+
+            function setMenu(form) {
+                document.querySelector("nav").hidden = Boolean(form);
+                joinForm.hidden = form !== joinForm;
+                createForm.hidden = form !== createForm;
+                status.hidden = true;
+            }
+
+            function getPlayerId(roomId) {
+                const key = `shapka:${roomId}:playerId`;
+                let playerId = sessionStorage.getItem(key);
+                if (!playerId) {
+                    playerId = crypto.randomUUID();
+                    sessionStorage.setItem(key, playerId);
                 }
+                return playerId;
+            }
+
+            function showError(message) {
+                status.textContent = message;
+                status.hidden = false;
+            }
+
+            document.getElementById("showJoin").addEventListener("click", () => setMenu(joinForm));
+            document.getElementById("showCreate").addEventListener("click", () => setMenu(createForm));
+            document.querySelectorAll(".backButton").forEach((button) => {
+                button.addEventListener("click", () => setMenu(null));
             });
+
+            joinForm.addEventListener("submit", (event) => {
+                event.preventDefault();
+                const roomId = document.getElementById("roomId").value.trim().toUpperCase();
+                const playerName = document.getElementById("joinName").value.trim();
+                if (!roomId || !playerName) return;
+
+                const playerId = getPlayerId(roomId);
+                window.location.href = `/lobby?roomId=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}&playerId=${encodeURIComponent(playerId)}`;
+            });
+
+            createForm.addEventListener("submit", (event) => {
+                event.preventDefault();
+                const playerName = document.getElementById("createName").value.trim();
+                const teamCount = Number(document.getElementById("teamCount").value);
+                if (!playerName || !Number.isInteger(teamCount) || teamCount < 2 || teamCount > 50) {
+                    showError("Enter a name and choose between 2 and 50 teams.");
+                    return;
+                }
+
+                const playerId = crypto.randomUUID();
+                const button = createForm.querySelector("button[type=submit]");
+                button.disabled = true;
+                socket.emit("createRoom", { name: playerName, teamCount, playerId });
+                sessionStorage.setItem("shapka:pendingPlayerId", playerId);
+                sessionStorage.setItem("shapka:pendingPlayerName", playerName);
+            });
+
+            socket.on("roomCreated", ({ roomId }) => {
+                const playerId = sessionStorage.getItem("shapka:pendingPlayerId");
+                const playerName = sessionStorage.getItem("shapka:pendingPlayerName");
+                if (!playerId || !playerName) {
+                    showError("Room created, but the player details were missing. Please join using the room code.");
+                    return;
+                }
+
+                sessionStorage.setItem(`shapka:${roomId}:playerId`, playerId);
+                sessionStorage.removeItem("shapka:pendingPlayerId");
+                sessionStorage.removeItem("shapka:pendingPlayerName");
+                window.location.href = `/lobby?roomId=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}&playerId=${encodeURIComponent(playerId)}`;
+            });
+
+            socket.on("roomCreationError", showError);
+            socket.on("connect_error", () => showError("Could not connect to the server. Please try again."));
+            setMenu(null);
         </script>
     </body>
 </html>

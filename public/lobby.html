@@ -2,69 +2,68 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <title>Game Lobby</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Shapka Lobby</title>
         <style>
             body {
                 font-family: sans-serif;
                 text-align: center;
-                padding-top: 50px;
+                padding: 32px 16px;
+                margin: 0;
             }
             .teams-container {
                 display: flex;
+                flex-wrap: wrap;
                 justify-content: center;
-                gap: 50px;
-                margin-top: 20px;
+                align-items: flex-start;
+                gap: 16px;
+                margin: 24px auto;
+                max-width: 1100px;
             }
             .team-card {
                 border: 2px solid #ccc;
                 border-radius: 8px;
-                padding: 20px;
-                width: 200px;
+                padding: 16px;
+                min-width: 200px;
+                max-width: 320px;
+                flex: 1 1 220px;
             }
-            .team-card h3 {
-                margin-top: 0;
-            }
-            .slot {
-                border: 1px dashed #aaa;
-                padding: 10px;
-                margin-bottom: 10px;
+            .player {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 8px;
+                padding: 8px;
+                margin-bottom: 8px;
+                border: 1px solid #ddd;
                 border-radius: 4px;
             }
-            .slot.filled {
-                background-color: #e0e0e0;
-                border-style: solid;
-            }
             button {
-                font-size: 16px;
-                padding: 10px;
+                font-size: 15px;
+                padding: 9px 12px;
                 cursor: pointer;
             }
+            button:disabled {
+                cursor: not-allowed;
+                opacity: 0.55;
+            }
+            #startGame {
+                margin: 12px;
+            }
             #status {
-                margin-top: 30px;
-                font-size: 1.2em;
+                margin-top: 20px;
                 font-weight: bold;
             }
         </style>
     </head>
     <body>
-        <h1 id="roomTitle"></h1>
-        <div class="teams-container">
-            <div class="team-card">
-                <h3>Team A</h3>
-                <div id="teamA_slot1" class="slot">Empty</div>
-                <div id="teamA_slot2" class="slot">Empty</div>
-                <button id="joinTeamA">Join Team A</button>
-            </div>
-            <div class="team-card">
-                <h3>Team B</h3>
-                <div id="teamB_slot1" class="slot">Empty</div>
-                <div id="teamB_slot2" class="slot">Empty</div>
-                <button id="joinTeamB">Join Team B</button>
-            </div>
-        </div>
-        <div id="status">Waiting for players...</div>
+        <h1 id="roomTitle">Loading room...</h1>
+        <p id="adminNotice"></p>
+        <div id="teams" class="teams-container"></div>
+        <button id="startGame" hidden>Start game</button>
+        <div id="status" role="status">Waiting for players...</div>
 
         <script src="/socket.io/socket.io.js"></script>
-        <script src="lobby.js"></script>
+        <script src="/lobby.js"></script>
     </body>
 </html>

@@ -1,25 +1,6 @@
 {
-  "name": "shapka",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Shtifan/Shapka.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/Shtifan/Shapka/issues"
-  },
-  "homepage": "https://github.com/Shtifan/Shapka#readme",
   "dependencies": {
-    "express": "^5.1.0",
-    "socket.io": "^4.8.1"
+    "express": "^5.3.0",
+    "socket.io": "^4.8.4"
   }
 }

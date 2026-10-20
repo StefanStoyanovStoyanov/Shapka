@@ -1,170 +1,214 @@
+const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
-const socketIo = require("socket.io");
 const path = require("path");
+const socketIo = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
-
+const io = new socketIo.Server(server);
 const rooms = {};
+
+function createRoom(teamCount, adminId, adminName) {
+    const teams = Array.from({ length: teamCount }, (_, index) => ({
+        id: `team-${index + 1}`,
+        name: `Team ${index + 1}`,
+        players: [],
+    }));
+    teams[0].players.push({ id: adminId, name: adminName });
+
+    return {
+        adminId,
+        players: { [adminId]: adminName },
+        teams,
+        words: {},
+        phase: "lobby",
+    };
+}
+
+function sanitizeWords(input) {
+    if (!Array.isArray(input)) return [];
+    return input
+        .filter((word) => typeof word === "string")
+        .map((word) => word.trim())
+        .filter(Boolean);
+}
+
+function getTeam(room, playerId) {
+    return room.teams.find((team) => team.players.some((player) => player.id === playerId));
+}
+
+function getPublicRoom(room) {
+    return {
+        adminId: room.adminId,
+        teams: room.teams,
+        players: Object.entries(room.players).map(([id, name]) => ({ id, name })),
+        playerCount: Object.keys(room.players).length,
+        submittedCount: Object.keys(room.words).length,
+        phase: room.phase,
+    };
+}
+
+function emitLobbyState(roomId) {
+    const room = rooms[roomId];
+    if (room) io.to(roomId).emit("lobbyUpdate", getPublicRoom(room));
+}
 
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.get("/lobby", (req, res) => res.sendFile(path.join(__dirname, "public", "lobby.html")));
 app.get("/words", (req, res) => res.sendFile(path.join(__dirname, "public", "words.html")));
-app.get("/round1", (req, res) => res.sendFile(path.join(__dirname, "public", "round1.html")));
-app.get("/round2", (req, res) => res.send("<h2>Round 2</h2>"));
+app.get("/game", (req, res) => res.sendFile(path.join(__dirname, "public", "game.html")));
+app.get("/game.html", (req, res) => res.sendFile(path.join(__dirname, "public", "game.html")));
 
 io.on("connection", (socket) => {
-    console.log("A user connected:", socket.id);
+    socket.on("createRoom", ({ name, teamCount, playerId } = {}) => {
+        const trimmedName = typeof name === "string" ? name.trim() : "";
+        const validTeamCount = Number.isInteger(teamCount) && teamCount >= 2 && teamCount <= 50;
+        const validPlayerId = typeof playerId === "string" && playerId.length > 0 && playerId.length <= 100;
 
-    socket.on("joinRoom", ({ roomId, name }) => {
-        if (!roomId || !name) {
-            return console.log(`Connection attempt with invalid details.`);
-        }
-
-        if (!rooms[roomId]) {
-            rooms[roomId] = {
-                players: {},
-                teams: { teamA: [], teamB: [] },
-                words: {},
-                wordsSubmittedCount: 0,
-                inProgress: false,
-                round1: {
-                },
-            };
-        }
-
-        const room = rooms[roomId];
-
-        if (room.inProgress && !room.players[socket.id]) {
-            socket.emit("roomLocked");
+        if (!trimmedName || trimmedName.length > 40 || !validTeamCount || !validPlayerId) {
+            socket.emit("roomCreationError", "Enter a name and choose between 2 and 50 teams.");
             return;
         }
 
-        socket.join(roomId);
-        socket.roomId = roomId;
-        socket.name = name;
-        room.players[socket.id] = name;
+        let roomId;
+        do {
+            roomId = crypto.randomBytes(3).toString("hex").toUpperCase();
+        } while (rooms[roomId]);
 
-        console.log(`Player '${name}' (${socket.id}) joined room ${roomId}`);
+        rooms[roomId] = createRoom(teamCount, playerId, trimmedName);
+        socket.emit("roomCreated", { roomId });
+    });
 
-        if (room.inProgress) {
-            socket.emit("gameStateUpdate", room.round1);
-        } else {
-            io.to(roomId).emit("lobbyUpdate", room);
+    socket.on("joinRoom", ({ roomId, name, playerId } = {}) => {
+        const trimmedName = typeof name === "string" ? name.trim() : "";
+        if (
+            typeof roomId !== "string" ||
+            !roomId.trim() ||
+            !trimmedName ||
+            trimmedName.length > 40 ||
+            typeof playerId !== "string" ||
+            !playerId.length ||
+            playerId.length > 100
+        ) {
+            socket.emit("roomJoinError", "Enter a valid room code and name.");
+            return;
+        }
+
+        const normalizedRoomId = roomId.trim().toUpperCase();
+        const room = rooms[normalizedRoomId];
+        if (!room) {
+            socket.emit("roomJoinError", "That room could not be found.");
+            return;
+        }
+        if (room.phase !== "lobby" && !room.players[playerId]) {
+            socket.emit("roomJoinError", "This room has already started.");
+            return;
+        }
+
+        if (socket.roomId && socket.roomId !== normalizedRoomId) {
+            socket.leave(socket.roomId);
+        }
+
+        socket.join(normalizedRoomId);
+        socket.roomId = normalizedRoomId;
+        socket.playerId = playerId;
+        socket.name = trimmedName;
+        room.players[playerId] = trimmedName;
+
+        if (room.phase === "lobby") {
+            emitLobbyState(normalizedRoomId);
+        } else if (room.phase === "submitting") {
+            socket.emit("submissionStatus", {
+                submitted: Boolean(room.words[playerId]),
+                submittedCount: Object.keys(room.words).length,
+                total: Object.keys(room.players).length,
+            });
+        } else if (room.phase === "complete") {
+            socket.emit("allWordsSubmitted");
         }
     });
 
-    socket.on("joinTeam", (team) => {
-        const { roomId, id: playerId, name } = socket;
-        if (!roomId || !rooms[roomId]) return;
+    socket.on("joinTeam", (teamId) => {
+        const { roomId, playerId } = socket;
+        const room = roomId && rooms[roomId];
+        if (!room || room.phase !== "lobby" || !room.players[playerId]) return;
 
-        const room = rooms[roomId];
-        const player = { id: playerId, name };
+        const targetTeam = room.teams.find((team) => team.id === teamId);
+        if (!targetTeam) return;
 
-        room.teams.teamA = room.teams.teamA.filter((p) => p.id !== playerId);
-        room.teams.teamB = room.teams.teamB.filter((p) => p.id !== playerId);
+        for (const team of room.teams) {
+            team.players = team.players.filter((player) => player.id !== playerId);
+        }
+        targetTeam.players.push({ id: playerId, name: room.players[playerId] });
+        emitLobbyState(roomId);
+    });
 
-        if (room.teams[team].length < 2) {
-            room.teams[team].push(player);
+    socket.on("removeFromTeam", (targetPlayerId) => {
+        const { roomId, playerId } = socket;
+        const room = roomId && rooms[roomId];
+        if (!room || room.phase !== "lobby" || playerId !== room.adminId) return;
+
+        for (const team of room.teams) {
+            team.players = team.players.filter((player) => player.id !== targetPlayerId);
+        }
+        emitLobbyState(roomId);
+    });
+
+    socket.on("startGame", () => {
+        const { roomId, playerId } = socket;
+        const room = roomId && rooms[roomId];
+        if (!room || room.phase !== "lobby" || playerId !== room.adminId) return;
+
+        const allPlayersAssigned = Object.keys(room.players).every((id) => getTeam(room, id));
+        if (!allPlayersAssigned || room.teams.some((team) => team.players.length === 0)) {
+            socket.emit("startGameError", "Assign every player to a team, and make sure every team has at least one player.");
+            return;
         }
 
-        io.to(roomId).emit("lobbyUpdate", room);
-
-        if (room.teams.teamA.length === 2 && room.teams.teamB.length === 2) {
-            io.to(roomId).emit("startWordSubmission");
-        }
+        room.phase = "submitting";
+        io.to(roomId).emit("startWordSubmission");
     });
 
     socket.on("submitWords", (submittedWords) => {
-        const { roomId, id: playerId } = socket;
-        if (!roomId || !rooms[roomId]) return;
+        const { roomId, playerId } = socket;
+        const room = roomId && rooms[roomId];
+        if (!room || room.phase !== "submitting" || !room.players[playerId] || !getTeam(room, playerId)) return;
 
-        const room = rooms[roomId];
-        room.words[playerId] = submittedWords;
-        room.wordsSubmittedCount++;
-
-        io.to(roomId).emit("wordsUpdate", room.wordsSubmittedCount);
-
-        if (room.wordsSubmittedCount === 4) {
-            room.inProgress = true;
-
-            room.round1.allWords = Object.values(room.words).flat();
-            room.round1.turnOrder = [room.teams.teamA[0], room.teams.teamB[0], room.teams.teamA[1], room.teams.teamB[1]];
-            io.to(roomId).emit("startRound1");
-            startTurn(roomId);
+        const words = sanitizeWords(submittedWords);
+        if (words.length !== 10) {
+            socket.emit("submitWordsError", "Please submit exactly ten non-empty words.");
+            return;
         }
-    });
 
-    socket.on("getNewWord", () => {
-        const { roomId } = socket;
-        if (!roomId || !rooms[roomId] || !rooms[roomId].round1.allWords.length) return;
-        const room = rooms[roomId];
-        const { allWords } = room.round1;
-        const randomIndex = Math.floor(Math.random() * allWords.length);
-        room.round1.currentWord = allWords[randomIndex];
-        io.to(roomId).emit("gameStateUpdate", room.round1);
-    });
+        room.words[playerId] = words;
+        const playerCount = Object.keys(room.players).length;
+        io.to(roomId).emit("wordsUpdate", {
+            submitted: Object.keys(room.words).length,
+            total: playerCount,
+        });
 
-    socket.on("wordGuessed", () => {
-        const { roomId } = socket;
-        if (!roomId || !rooms[roomId] || !rooms[roomId].round1.currentWord) return;
-
-        const room = rooms[roomId];
-        const { round1 } = room;
-        const currentPlayer = round1.turnOrder[round1.currentPlayerIndex];
-        const team = room.teams.teamA.some((p) => p.id === currentPlayer.id) ? "teamA" : "teamB";
-        round1.scores[team]++;
-
-        round1.allWords = round1.allWords.filter((word) => word !== round1.currentWord);
-        round1.currentWord = null;
-
-        if (round1.allWords.length === 0) {
-            io.to(roomId).emit("roundOver", round1.scores);
-            setTimeout(() => io.to(roomId).emit("startRound2"), 5000);
-        } else {
-            io.to(roomId).emit("gameStateUpdate", round1);
+        if (Object.keys(room.words).length === playerCount) {
+            room.phase = "complete";
+            io.to(roomId).emit("allWordsSubmitted");
         }
     });
 
     socket.on("disconnect", () => {
-        console.log("A user disconnected:", socket.id);
-        const { roomId, id: playerId } = socket;
-        if (!roomId || !rooms[roomId]) return;
+        const { roomId, playerId } = socket;
+        const room = roomId && rooms[roomId];
+        if (!room || room.phase !== "lobby") return;
 
-        const room = rooms[roomId];
         delete room.players[playerId];
-        room.teams.teamA = room.teams.teamA.filter((p) => p.id !== playerId);
-        room.teams.teamB = room.teams.teamB.filter((p) => p.id !== playerId);
+        for (const team of room.teams) {
+            team.players = team.players.filter((player) => player.id !== playerId);
+        }
 
-        io.to(roomId).emit("lobbyUpdate", room);
+        emitLobbyState(roomId);
     });
 });
-
-let timers = {};
-function startTurn(roomId) {
-    const room = rooms[roomId];
-    if (!room) return;
-
-    io.to(roomId).emit("gameStateUpdate", room.round1);
-
-    if (timers[roomId]) clearInterval(timers[roomId]);
-
-    let timeLeft = 60;
-    timers[roomId] = setInterval(() => {
-        io.to(roomId).emit("timerUpdate", timeLeft);
-        timeLeft--;
-
-        if (timeLeft < 0) {
-            clearInterval(timers[roomId]);
-            room.round1.currentPlayerIndex = (room.round1.currentPlayerIndex + 1) % 4;
-            room.round1.currentWord = null;
-            startTurn(roomId);
-        }
-    }, 1000);
-}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
