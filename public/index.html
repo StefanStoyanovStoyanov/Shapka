@@ -46,7 +46,6 @@
                 const name = document.getElementById("nameInput").value;
                 const roomId = document.getElementById("roomIdInput").value;
                 if (roomId && name) {
-                    // Redirect to the LOBBY page with both name and roomId
                     window.location.href = `/lobby?roomId=${roomId}&name=${encodeURIComponent(name)}`;
                 }
             });

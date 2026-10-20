@@ -1,12 +1,9 @@
-// public/lobby.js - WHOLE FILE
 const socket = io();
 
-// Read both 'roomId' and 'name' from the URL.
 const urlParams = new URLSearchParams(window.location.search);
 const roomId = urlParams.get("roomId");
 const name = urlParams.get("name");
 
-// Get references to HTML elements.
 const roomTitle = document.getElementById("roomTitle");
 const joinTeamAButton = document.getElementById("joinTeamA");
 const joinTeamBButton = document.getElementById("joinTeamB");
@@ -16,23 +13,20 @@ const teamBSlots = [document.getElementById("teamB_slot1"), document.getElementB
 
 if (roomId && name) {
     roomTitle.innerText = `Lobby for Room: ${roomId}`;
-    // Emit an object with both roomId and name.
     socket.emit("joinRoom", { roomId, name });
 } else {
     roomTitle.innerText = "Error: Room ID or Name is missing!";
 }
 
-// --- Client Actions (Emitting Events) ---
 joinTeamAButton.addEventListener("click", () => socket.emit("joinTeam", "teamA"));
 joinTeamBButton.addEventListener("click", () => socket.emit("joinTeam", "teamB"));
 
-// --- Server Responses (Listening for Events) ---
 socket.on("lobbyUpdate", (room) => {
     const updateTeamSlots = (slots, teamMembers) => {
         slots.forEach((slot, index) => {
             const player = teamMembers[index];
             if (player) {
-                slot.textContent = player.name; // Display player's name
+                slot.textContent = player.name;
                 slot.classList.add("filled");
             } else {
                 slot.textContent = "Empty";
@@ -55,6 +49,5 @@ socket.on("lobbyUpdate", (room) => {
 });
 
 socket.on("startWordSubmission", () => {
-    // Pass the name to the next page as well, in case it's needed.
     window.location.href = `/words?roomId=${roomId}&name=${encodeURIComponent(name)}`;
 });

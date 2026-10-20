@@ -11,7 +11,6 @@ const rooms = {};
 
 app.use(express.static(path.join(__dirname, "public")));
 
-// --- Route handlers ---
 app.get("/lobby", (req, res) => res.sendFile(path.join(__dirname, "public", "lobby.html")));
 app.get("/words", (req, res) => res.sendFile(path.join(__dirname, "public", "words.html")));
 app.get("/round1", (req, res) => res.sendFile(path.join(__dirname, "public", "round1.html")));
@@ -25,26 +24,22 @@ io.on("connection", (socket) => {
             return console.log(`Connection attempt with invalid details.`);
         }
 
-        // Initialize the room if it doesn't exist.
         if (!rooms[roomId]) {
             rooms[roomId] = {
                 players: {},
                 teams: { teamA: [], teamB: [] },
                 words: {},
                 wordsSubmittedCount: 0,
-                inProgress: false, // <-- NEW: Flag to track if the game has started
+                inProgress: false,
                 round1: {
-                    // ... (rest of round1 state)
                 },
             };
         }
 
         const room = rooms[roomId];
 
-        // ** THE LOCKING LOGIC **
-        // If the game has started AND this player is not already in the room, block them.
         if (room.inProgress && !room.players[socket.id]) {
-            socket.emit("roomLocked"); // Send a specific event to the user trying to join
+            socket.emit("roomLocked");
             return;
         }
 
@@ -55,7 +50,6 @@ io.on("connection", (socket) => {
 
         console.log(`Player '${name}' (${socket.id}) joined room ${roomId}`);
 
-        // This logic correctly sends game state to reconnecting players or lobby state to new ones.
         if (room.inProgress) {
             socket.emit("gameStateUpdate", room.round1);
         } else {
@@ -70,11 +64,9 @@ io.on("connection", (socket) => {
         const room = rooms[roomId];
         const player = { id: playerId, name };
 
-        // Remove player from the other team if they are switching
         room.teams.teamA = room.teams.teamA.filter((p) => p.id !== playerId);
         room.teams.teamB = room.teams.teamB.filter((p) => p.id !== playerId);
 
-        // Add player to the new team if there's space
         if (room.teams[team].length < 2) {
             room.teams[team].push(player);
         }
@@ -97,8 +89,7 @@ io.on("connection", (socket) => {
         io.to(roomId).emit("wordsUpdate", room.wordsSubmittedCount);
 
         if (room.wordsSubmittedCount === 4) {
-            // --- Set the game state to "in progress" ---
-            room.inProgress = true; // <-- NEW: Lock the room when the game starts
+            room.inProgress = true;
 
             room.round1.allWords = Object.values(room.words).flat();
             room.round1.turnOrder = [room.teams.teamA[0], room.teams.teamB[0], room.teams.teamA[1], room.teams.teamB[1]];
